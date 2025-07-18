@@ -4,11 +4,11 @@ import pandas as pd
 import os
 
 load_dotenv()
-CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID") # Removed fallback to easily see if it's None
-CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET") # Removed fallback
+CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID") 
+CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET")
 USER_AGENT = os.environ.get("REDDIT_USER_AGENT")
-USERNAME = os.environ.get("REDDIT_USERNAME") # Removed fallback
-PASSWORD = os.environ.get("REDDIT_PASSWORD") # Removed fallback
+USERNAME = os.environ.get("REDDIT_USERNAME") 
+PASSWORD = os.environ.get("REDDIT_PASSWORD") 
 print("CLIENT_ID:", CLIENT_ID)
 print("CLIENT_SECRET:", CLIENT_SECRET)
 print("USER_AGENT:", USER_AGENT)
@@ -27,17 +27,18 @@ def getTopSubreddits(limit):
     try: 
         num = 1
         for subreddit in reddit.subreddits.popular(limit=limit):
-            subreddits.append({
-                "name": subreddit.display_name,
-                "subscribers": subreddit.subscribers,
-                "url": f"https://www.reddit.com/r/{subreddit.display_name}/",
-                "public_description": subreddit.public_description.replace('\n', ' ') if subreddit.public_description else ''
-            })
-            print(num)
-            num += 1
+            if subreddit.over18 == False:
+                subreddits.append({
+                    "name": subreddit.display_name,
+                    "subscribers": subreddit.subscribers,
+                    "url": f"https://www.reddit.com/r/{subreddit.display_name}/",
+                    "public_description": subreddit.public_description.replace('\n', ' ') if subreddit.public_description else ''
+                })
+                print(num)
+                num += 1
 
-            if len(subreddits) >= limit:
-                break
+                if len(subreddits) >= limit:
+                    break
     except Exception as e:
         print(f"Error: {e}")
     sub_df = pd.DataFrame(subreddits)
@@ -53,7 +54,7 @@ if __name__ == "__main__":
         sub_df = getTopSubreddits(5000)
         print(sub_df.head(5))
         print(len(sub_df))
-        sub_df.to_csv('top-subreddits.csv')
+        sub_df.to_csv('datasets/top-subreddits.csv')
     else:
         print("Missing access information")
     
