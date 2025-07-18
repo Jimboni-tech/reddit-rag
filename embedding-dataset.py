@@ -2,7 +2,7 @@
 #FAISS
 import pandas as pd
 from sentence_transformers import SentenceTransformer
-from tqdm import tqdm  # Import tqdm for progress bar
+from tqdm import tqdm 
 
 try:
     sub_df = pd.read_csv("datasets/top-subreddits.csv")
