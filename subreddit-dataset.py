@@ -2,6 +2,7 @@ import praw
 from dotenv import load_dotenv
 import pandas as pd
 import os
+import re
 
 load_dotenv()
 CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID") 
@@ -14,6 +15,19 @@ print("CLIENT_SECRET:", CLIENT_SECRET)
 print("USER_AGENT:", USER_AGENT)
 print("USERNAME:", USERNAME)
 print("PASSWORD:", PASSWORD)
+
+
+
+def clean_text(text):
+    """Removes common markdown and cleans up text for embeddings."""
+    if text is None:
+        return ""
+    text = re.sub(r'\[.*?\]\(.*?\)', '', text)
+    text = re.sub(r'[#*_`]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
 def getTopSubreddits(limit):
     reddit = praw.Reddit(
             client_id=CLIENT_ID,
@@ -32,7 +46,9 @@ def getTopSubreddits(limit):
                     "name": subreddit.display_name,
                     "subscribers": subreddit.subscribers,
                     "url": f"https://www.reddit.com/r/{subreddit.display_name}/",
-                    "public_description": subreddit.public_description.replace('\n', ' ') if subreddit.public_description else ''
+                    "public_description": clean_text(subreddit.public_description),
+                    "description": clean_text(subreddit.description),
+                    "submit_text": clean_text(subreddit.submit_text)
                 })
                 print(num)
                 num += 1
