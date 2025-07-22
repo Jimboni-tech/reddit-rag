@@ -3,6 +3,23 @@ from dotenv import load_dotenv
 import pandas as pd
 import os
 import re
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError: # Changed to LookupError
+    nltk.download('stopwords')
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError: # Changed to LookupError
+    nltk.download('wordnet')
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError: # Changed to LookupError
+    nltk.download('punkt')
+
 
 load_dotenv()
 CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID") 
@@ -19,12 +36,27 @@ print("PASSWORD:", PASSWORD)
 
 
 def clean_text(text):
-    """Removes common markdown and cleans up text for embeddings."""
+    
     if text is None:
         return ""
     text = re.sub(r'\[.*?\]\(.*?\)', '', text)
     text = re.sub(r'[#*_`]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = text.lower()
+    '''text = re.sub(r'http\S+|www\S+', '', text)
+    text = re.sub(r'[^a-z\s]', '', text)
+
+    words = nltk.word_tokenize(text) #tokenization
+
+    stop_words = set(stopwords.words('english')) #stop words
+    words = [word for word in words if word not in stop_words]
+
+    lemmatizer = WordNetLemmatizer() #lemmatization
+    words = [lemmatizer.lemmatize(word) for word in words]
+
+    text = ' '.join(words).strip()
+    text = re.sub(r'\s+', ' ', text).strip()'''
+
+
     return text
 
 
@@ -47,8 +79,6 @@ def getTopSubreddits(limit):
                     "subscribers": subreddit.subscribers,
                     "url": f"https://www.reddit.com/r/{subreddit.display_name}/",
                     "public_description": clean_text(subreddit.public_description),
-                    "description": clean_text(subreddit.description),
-                    "submit_text": clean_text(subreddit.submit_text)
                 })
                 print(num)
                 num += 1
