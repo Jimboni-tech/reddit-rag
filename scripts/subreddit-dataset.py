@@ -100,7 +100,7 @@ if __name__ == "__main__":
         sub_df = getTopSubreddits(5000)
         print(sub_df.head(5))
         print(len(sub_df))
-        sub_df.to_csv('datasets/top-subreddits.csv')
+        sub_df.to_csv('./datasets/top-subreddits.csv')
     else:
         print("Missing access information")
     
