@@ -68,8 +68,7 @@ def setup_search_environment(processed_embeddings_path='./datasets/processed_emb
 def find_all_relevant_subreddits(user_query, dataframe, embedding_model, faiss_index, similarity_threshold=0.3):
     query_embedding = embedding_model.encode([user_query], convert_to_numpy=True).astype(np.float32)
     faiss.normalize_L2(query_embedding)
-
-    k_to_search = min(faiss_index.ntotal, 100000)
+    k_to_search = min(faiss_index.ntotal, 100000) 
     distances, indices = faiss_index.search(query_embedding, k_to_search)
 
     filtered_results = []
@@ -89,18 +88,19 @@ def find_all_relevant_subreddits(user_query, dataframe, embedding_model, faiss_i
 
     top_subreddits_df = dataframe.iloc[result_indices].copy()
     top_subreddits_df['similarity_score'] = result_scores
+
     return top_subreddits_df.sort_values(by='similarity_score', ascending=False)
 
-def main():
+def main(user_query):
     embed_df, model, index = setup_search_environment()
 
     if embed_df is None:
         print("Setup failed. Exiting.")
+        return None
     else:
-        user_prompt = input("Enter your search query: ")
         try:
-            RELEVANCE_THRESHOLD = 0.35
-            all_relevant_results = find_all_relevant_subreddits(user_prompt, embed_df, model, index, similarity_threshold=RELEVANCE_THRESHOLD)
+            RELEVANCE_THRESHOLD = 0.35 
+            all_relevant_results = find_all_relevant_subreddits(user_query, embed_df, model, index, similarity_threshold=RELEVANCE_THRESHOLD)
 
             if not all_relevant_results.empty:
                 subreddits_output = []
@@ -119,6 +119,8 @@ def main():
 
         except Exception as e:
             print(f"An error occurred during search: {e}")
+            return None
 
 if __name__ == "__main__":
-    main()
+    example_query = input("Enter your search query: ")
+    main(example_query)
