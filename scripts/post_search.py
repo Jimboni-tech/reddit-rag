@@ -14,6 +14,8 @@ PASSWORD = os.environ.get("REDDIT_PASSWORD")
 
 
 relevant_subs = main()
+relevant_subs = relevant_subs.head(3)
+print(relevant_subs)
 
 if relevant_subs is not None:
     reddit = praw.Reddit(
@@ -24,3 +26,6 @@ if relevant_subs is not None:
             password=PASSWORD
         )
     for sub in relevant_subs['name']:
+        reddit.subreddit(sub)
+else:
+    print("no relevant subreddits")

@@ -4,8 +4,9 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 import ast
 import re
+import os 
 
-def parse_embedding_string(s):
+def parse_embedding_string(s): 
     s = s.strip()
     if not s:
         return None
@@ -23,45 +24,50 @@ def parse_embedding_string(s):
         print(f"Error evaluating embedding string: '{s}' -> {e}")
         return None
 
-def setup_search_environment(embeddings_path='./datasets/top-subreddits-embeddings.csv'):
+def setup_search_environment(processed_embeddings_path='./datasets/processed_embeddings.parquet',
+                             faiss_index_path='./datasets/faiss_index.bin'):
+    embed_df = None
+    model = None
+    index = None
 
+    # Load pre-processed DataFrame 
     try:
-        embed_df = pd.read_csv(embeddings_path)
-        embed_df['embeddings'] = embed_df['embeddings'].apply(parse_embedding_string)
-        embed_df.dropna(subset=['embeddings'], inplace=True)
-        print("Embeddings DataFrame loaded and parsed.")
-    except FileNotFoundError:
-        print(f"Error: '{embeddings_path}' not found. Please run 'preparing embeddings' script first.")
-        return None, None, None
+        if os.path.exists(processed_embeddings_path):
+            embed_df = pd.read_parquet(processed_embeddings_path)
+            print(f"Processed DataFrame loaded from '{processed_embeddings_path}'.")
+        else:
+            print(f"Warning: Processed embeddings file '{processed_embeddings_path}' not found. Please run pre-processing script.")
+            return None, None, None
     except Exception as e:
-        print(f"An unexpected error occurred during data loading: {e}")
+        print(f"An error occurred while loading processed embeddings: {e}")
         return None, None, None
 
-    model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
-    print("Sentence Transformer model loaded: all-mpnet-base-v2")
-
-    valid_embeddings = embed_df['embeddings'].tolist()
-    if not valid_embeddings:
-        print("Error: No valid embeddings found in the dataset after cleaning. Exiting setup.")
+    # Load Sentence Transformer model 
+    try:
+        model = SentenceTransformer('sentence-transformers/all-mpnet-base-v2')
+        print("Sentence Transformer model loaded: all-mpnet-base-v2")
+    except Exception as e:
+        print(f"Error loading Sentence Transformer model: {e}")
         return None, None, None
 
-    corpus_embeddings = np.vstack(valid_embeddings)
-    corpus_embeddings = corpus_embeddings.astype(np.float32)
-    dimension = corpus_embeddings.shape[1]
-
-    faiss.normalize_L2(corpus_embeddings)
-    print(f"Prepared {len(corpus_embeddings)} embeddings of dimension {dimension}.")
-
-    index = faiss.IndexFlatIP(dimension)
-    index.add(corpus_embeddings)
-    print(f"FAISS index created and populated with {index.ntotal} vectors.")
+    # Load FAISS index
+    try:
+        if os.path.exists(faiss_index_path):
+            index = faiss.read_index(faiss_index_path)
+            print(f"FAISS index loaded from '{faiss_index_path}'.")
+            print(f"FAISS index populated with {index.ntotal} vectors.")
+        else:
+            print(f"Warning: FAISS index file '{faiss_index_path}' not found. Please run pre-processing script.")
+            return None, None, None
+    except Exception as e:
+        print(f"An error occurred while loading FAISS index: {e}")
+        return None, None, None
 
     return embed_df, model, index
 
 def find_all_relevant_subreddits(user_query, dataframe, embedding_model, faiss_index, similarity_threshold=0.3):
     query_embedding = embedding_model.encode([user_query], convert_to_numpy=True).astype(np.float32)
     faiss.normalize_L2(query_embedding)
-
 
     k_to_search = min(faiss_index.ntotal, 100000)
     distances, indices = faiss_index.search(query_embedding, k_to_search)
@@ -73,7 +79,6 @@ def find_all_relevant_subreddits(user_query, dataframe, embedding_model, faiss_i
         if score >= similarity_threshold:
             filtered_results.append((idx, score))
         else:
-
             break
 
     if not filtered_results:
@@ -87,7 +92,6 @@ def find_all_relevant_subreddits(user_query, dataframe, embedding_model, faiss_i
     return top_subreddits_df.sort_values(by='similarity_score', ascending=False)
 
 def main():
-
     embed_df, model, index = setup_search_environment()
 
     if embed_df is None:
@@ -95,7 +99,7 @@ def main():
     else:
         user_prompt = input("Enter your search query: ")
         try:
-            RELEVANCE_THRESHOLD = 0.4
+            RELEVANCE_THRESHOLD = 0.35
             all_relevant_results = find_all_relevant_subreddits(user_prompt, embed_df, model, index, similarity_threshold=RELEVANCE_THRESHOLD)
 
             if not all_relevant_results.empty:
@@ -115,3 +119,6 @@ def main():
 
         except Exception as e:
             print(f"An error occurred during search: {e}")
+
+if __name__ == "__main__":
+    main()
