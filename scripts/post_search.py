@@ -1,5 +1,5 @@
 import pandas as pd
-from sub_search import setup_search_environment, find_all_relevant_subreddits, main as sub_search_main 
+from sub_search import setup_search_environment, find_all_relevant_subreddits, main as sub_search_main
 from dotenv import load_dotenv
 import os
 import praw
@@ -8,10 +8,12 @@ import re
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import torch
-import torch.nn.functional as F 
+import torch.nn.functional as F
 from transformers import AutoTokenizer 
-import functools 
-
+import functools
+import gc
+import requests 
+import json 
 
 load_dotenv()
 CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID")
@@ -20,6 +22,7 @@ USER_AGENT = os.environ.get("REDDIT_USER_AGENT")
 USERNAME = os.environ.get("REDDIT_USERNAME")
 PASSWORD = os.environ.get("REDDIT_PASSWORD")
 
+
 reddit = praw.Reddit(
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET,
@@ -27,44 +30,40 @@ reddit = praw.Reddit(
     username=USERNAME,
     password=PASSWORD
 )
-print("Initializing PyTorch device...")
+
+
 device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"PyTorch operations will use device: {device}")
 
-print("Loading sentence embedding model (all-MiniLM-L6-v2)...")
-model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device=device)
 print(f"Sentence embedding model loaded on device: {device}")
 
-# --- Load Llama 3 Tokenizer ---
-# IMPORTANT: Replace 'meta-llama/Llama-3-8B-Instruct' with the actual Llama 3 model identifier
-# you plan to use when it's publicly available and supported by Hugging Face Transformers.
-# Llama 3.1 models have larger context windows (e.g., 128k tokens for 8B and 70B).
-# For general Llama 3 (initial release), the context window is typically 8k tokens.
-# Adjust MAX_CONTEXT_TOKENS accordingly.
+
+llama_tokenizer = None
+llama_model_name_for_tokenizer = "meta-llama/Meta-Llama-3-8B-Instruct" 
+MAX_CONTEXT_TOKENS = 8192
+
 try:
-    llama_tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct")
-    print("Llama tokenizer loaded successfully.")
-    # Typical Llama 3 context window for 8B/70B base models is 8192 tokens.
-    # Llama 3.1 models (newer) go up to 128k tokens. Adjust based on your specific Llama 3 version.
-    # processing 8k tokens is more practical than 128k in real-time.
-    MAX_CONTEXT_TOKENS = 8192 
-    print(f"Set MAX_CONTEXT_TOKENS based on Llama 3.1 8B context: {MAX_CONTEXT_TOKENS} tokens.")
+    print(f"Loading Llama 3 tokenizer: {llama_model_name_for_tokenizer}...")
+    llama_tokenizer = AutoTokenizer.from_pretrained(llama_model_name_for_tokenizer)
+    MAX_CONTEXT_TOKENS = llama_tokenizer.model_max_length
+    if MAX_CONTEXT_TOKENS > 100000: 
+        MAX_CONTEXT_TOKENS = 128000
+    elif MAX_CONTEXT_TOKENS < 8000: 
+        MAX_CONTEXT_TOKENS = 8192
+    print(f"{MAX_CONTEXT_TOKENS} tokens")
+
 except Exception as e:
-    print(f"Could not load Llama tokenizer (e.g., 'meta-llama/Llama-3-8B-Instruct'). Please ensure you have access and the correct model identifier: {e}")
-    print("Falling back to a more generic token estimation for truncation.")
+    print(f"Could not load Llama tokenizer for token estimation: {e}")
     llama_tokenizer = None
     MAX_CONTEXT_TOKENS = 4000 
 
+
 @functools.lru_cache(maxsize=256)
-def get_post_pool(subreddit_name: str, limit: int = 1000, time_filter: str = 'year') -> list[dict]:
-    """
-    Fetches posts from a specified subreddit.
-    Cached to improve efficiency for repeated calls.
-    """
+def get_post_pool(subreddit_name: str, limit: int = 600, time_filter: str = 'year') -> list[dict]:
     subreddit = reddit.subreddit(subreddit_name)
     posts_data = []
     try:
-
         for submission in subreddit.top(time_filter=time_filter, limit=limit):
             if submission.selftext:
                 posts_data.append({
@@ -79,19 +78,15 @@ def get_post_pool(subreddit_name: str, limit: int = 1000, time_filter: str = 'ye
         print(f"Error fetching posts from r/{subreddit_name}: {e}")
     return posts_data
 
-@functools.lru_cache(maxsize=512) 
+@functools.lru_cache(maxsize=512)
 def get_top_comments(submission_id: str, limit: int = 10) -> list[dict]:
-    """
-    Fetches top comments for a given submission ID.
-    Cached to improve efficiency for repeated calls.
-    """
+
     submission = reddit.submission(id=submission_id)
     comments_data = []
     try:
-    
         submission.comments.replace_more(limit=0)
         top_level_comments = [comment for comment in submission.comments.list() if comment.is_root]
-        top_level_comments.sort(key=lambda c: c.score, reverse=True) # Sort by score
+        top_level_comments.sort(key=lambda c: c.score, reverse=True)
 
         for comment in top_level_comments[:limit]:
             if comment.body and comment.author:
@@ -100,7 +95,7 @@ def get_top_comments(submission_id: str, limit: int = 10) -> list[dict]:
                     "text": comment.body,
                     "score": comment.score,
                     "parent_id": submission_id,
-                    "author": str(comment.author) 
+                    "author": str(comment.author)
                 })
     except Exception as e:
         print(f"Error fetching comments for submission {submission_id}: {e}")
@@ -109,11 +104,6 @@ def get_top_comments(submission_id: str, limit: int = 10) -> list[dict]:
 
 def filter_and_select_relevant_content(query: str, all_posts_pool: list[dict], embedding_model: SentenceTransformer,
                                        min_post_score: int = 50, min_comment_score: int = 10, num_relevant_posts: int = 5) -> defaultdict:
-    """
-    Filters and selects the most relevant posts and their comments based on cosine similarity
-    to the query and predefined score thresholds.
-    Utilizes MPS for embedding and similarity calculations.
-    """
     query_embedding = embedding_model.encode(query, convert_to_tensor=True).to(device)
 
     relevant_posts_candidates = []
@@ -131,7 +121,7 @@ def filter_and_select_relevant_content(query: str, all_posts_pool: list[dict], e
         if post["score"] >= min_post_score:
             post_similarity_score = similarities[i]
             relevant_posts_candidates.append({
-                **post, 
+                **post,
                 "relevance_score": float(post_similarity_score)
             })
 
@@ -170,10 +160,6 @@ def filter_and_select_relevant_content(query: str, all_posts_pool: list[dict], e
     return final_relevant_data
 
 def format_for_llm(relevant_data: defaultdict) -> str:
-    """
-    Formats the relevant data into a structured string for LLM context.
-    Prioritizes highly relevant posts and their comments.
-    """
     context_parts = []
     context_parts.append("Context from Reddit:\n\n")
 
@@ -185,7 +171,7 @@ def format_for_llm(relevant_data: defaultdict) -> str:
     for subreddit_name in sorted_subreddits:
         data = relevant_data[subreddit_name]
         if not data["posts"] and not data["comments"]:
-            continue 
+            continue
 
         context_parts.append(f"--- Subreddit: r/{subreddit_name} ---\n\n")
 
@@ -197,8 +183,7 @@ def format_for_llm(relevant_data: defaultdict) -> str:
             post_string.append(f"Post Content: {post['text']}\n")
 
             post_comments = [c for c in data["comments"] if c["parent_id"] == post["id"]]
-            post_comments.sort(key=lambda x: x["relevance_score"], reverse=True) 
-            post_comments_by_score = sorted(post_comments, key=lambda x: x["score"], reverse=True) 
+            post_comments.sort(key=lambda x: x["relevance_score"], reverse=True)
 
             if post_comments:
                 post_string.append("Top Relevant Comments:\n")
@@ -210,17 +195,15 @@ def format_for_llm(relevant_data: defaultdict) -> str:
     return "".join(context_parts)
 
 def truncate_context_for_llm(context_string: str, max_tokens: int, tokenizer: AutoTokenizer) -> str:
-    """
-    Truncates the context string to fit within a maximum token limit using a specific tokenizer.
-    Prioritizes retaining information from the beginning (more relevant content).
-    """
+
     if tokenizer is None:
-        if len(context_string) <= max_tokens * 4: 
+        max_chars = int(max_tokens * 4)
+        if len(context_string) <= max_chars:
             return context_string
         else:
-            truncated_context = context_string[:max_tokens * 4]
+            truncated_context = context_string[:max_chars]
             last_newline = truncated_context.rfind('\n\n')
-            if last_newline != -1 and last_newline > max_tokens * 4 * 0.8:
+            if last_newline != -1 and last_newline > max_chars * 0.8:
                 truncated_context = truncated_context[:last_newline]
             return truncated_context + "\n\n... [Context truncated by character count, tokenizer not loaded]"
 
@@ -229,46 +212,87 @@ def truncate_context_for_llm(context_string: str, max_tokens: int, tokenizer: Au
     if len(tokens) <= max_tokens:
         return context_string
     else:
-
         truncated_tokens = tokens[:max_tokens]
-
         truncated_context = tokenizer.decode(truncated_tokens, clean_up_tokenization_spaces=True)
         return truncated_context + "\n\n... [Context truncated by token count]"
 
 
+def generate_ollama_response(user_query: str, context: str, ollama_model_name: str = "llama3", ollama_api_url: str = "http://localhost:11434/api/chat") -> str:
+    """
+    Generates a response from the Llama 3 LLM via the Ollama API.
+    """
+    messages = [
+        {"role": "system", "content": "You are a helpful and accurate assistant. Use the provided Reddit context to answer the user's question. If the context does not contain enough information, state that clearly and do not make up answers."},
+        {"role": "user", "content": f"Based on the following Reddit context, answer the question:\n\nContext:\n{context}\n\nQuestion: {user_query}"}
+    ]
+
+    payload = {
+        "model": ollama_model_name,
+        "messages": messages,
+        "stream": False, 
+        "options": {
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "num_predict": 512 
+        }
+    }
+
+    headers = {"Content-Type": "application/json"}
+
+    print(f"\nSending request to Ollama with model: {ollama_model_name}...")
+    try:
+        response = requests.post(ollama_api_url, headers=headers, data=json.dumps(payload))
+        response.raise_for_status() 
+
+        response_data = response.json()
+        if "message" in response_data and "content" in response_data["message"]:
+            return response_data["message"]["content"].strip()
+        elif "error" in response_data:
+            return f"Error from Ollama API: {response_data['error']}"
+        else:
+            return "Unexpected response format from Ollama API."
+
+    except requests.exceptions.ConnectionError as e:
+        return f"Could not connect to Ollama. Is it running? Error: {e}"
+    except requests.exceptions.Timeout:
+        return "Ollama API request timed out."
+    except requests.exceptions.RequestException as e:
+        return f"An error occurred during the Ollama API request: {e}"
+    except Exception as e:
+        return f"An unexpected error occurred: {e}"
+
+
 if __name__ == "__main__":
-    print("Starting Reddit RAG Pipeline...")
     user_query = input("Enter your search query: ")
     print(f"\nSearching for relevant subreddits for query: '{user_query}'...")
-    relevant_subs_df = sub_search_main(user_query) 
+    relevant_subs_df = sub_search_main(user_query)
 
     if relevant_subs_df is not None and not relevant_subs_df.empty:
-
         relevant_subs_list = relevant_subs_df['name'].head(3).tolist()
-        print(f"Top 3 Relevant Subreddits: {relevant_subs_list}")
+        print(f"Subreddits: {relevant_subs_list}")
+
         all_posts_pool = []
         for sub in relevant_subs_list:
-            print(f"Retrieving posts from r/{sub} (cached)...")
-            all_posts_pool.extend(get_post_pool(sub, limit=500)) 
+            all_posts_pool.extend(get_post_pool(sub, limit=600))
 
-        print(f"\nFetched {len(all_posts_pool)} posts in total.")
+        print(f"\{len(all_posts_pool)} posts")
 
-        print(f"\nFiltering and selecting relevant content for query: '{user_query}' using embeddings on {device}...")
         final_relevant_data = filter_and_select_relevant_content(
-            user_query, all_posts_pool, model,
-            min_post_score=50, 
+            user_query, all_posts_pool, embedding_model,
+            min_post_score=50,
             min_comment_score=10,
-            num_relevant_posts=5 
+            num_relevant_posts=5
         )
 
-        print("\nFormatting context for LLM...")
         raw_llm_context = format_for_llm(final_relevant_data)
-        print(f"\nTruncating context to fit LLM's {MAX_CONTEXT_TOKENS} token window...")
+
         llm_context = truncate_context_for_llm(raw_llm_context, MAX_CONTEXT_TOKENS, llama_tokenizer)
 
-        print(f"\n--- LLM Context (Approx. {len(llama_tokenizer.encode(llm_context, add_special_tokens=False)) if llama_tokenizer else 'N/A'} tokens) ---")
-        print(llm_context)
-        print("--- End LLM Context ---")
+        approx_token_count = len(llama_tokenizer.encode(llm_context, add_special_tokens=False)) if llama_tokenizer else "N/A (tokenizer not loaded)"
+
+        llm_response = generate_ollama_response(user_query, llm_context, ollama_model_name="llama3")
+        print("\nLLM Response:")
+        print(llm_response)
 
     else:
         print("No relevant subreddits found or sub_search setup failed to start the RAG pipeline.")
