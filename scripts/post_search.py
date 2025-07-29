@@ -42,7 +42,7 @@ print(f"Sentence embedding model loaded on device: {device}")
 # For general Llama 3 (initial release), the context window is typically 8k tokens.
 # Adjust MAX_CONTEXT_TOKENS accordingly.
 try:
-    llama_tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3-8B-Instruct")
+    llama_tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct")
     print("Llama tokenizer loaded successfully.")
     # Typical Llama 3 context window for 8B/70B base models is 8192 tokens.
     # Llama 3.1 models (newer) go up to 128k tokens. Adjust based on your specific Llama 3 version.
